@@ -105,6 +105,7 @@ enum cmd_and_opt_values
     aEncrSym,
     aDecryptFiles,
     aClearsign,
+    aRingClearsign,
     aStore,
     aKeygen,
     aSignEncr,
@@ -383,6 +384,7 @@ static ARGPARSE_OPTS opts[] = {
 
     { aSign, "sign",      256, N_("|[file]|make a signature")},
     { aClearsign, "clearsign", 256, N_("|[file]|make a clear text signature")},
+    { aRingClearsign, "ring-clearsign", 256, N_("ring clearsign data")},
     { aDetachedSign, "detach-sign", 256, N_("make a detached signature")},
     { aEncr, "encrypt",   256, N_("encrypt data")},
     { aEncrFiles, "encrypt-files", 256, "@"},
@@ -2127,6 +2129,7 @@ main (int argc, char **argv )
 	  case aStore: set_cmd( &cmd, aStore); break;
 	  case aEditKey: set_cmd( &cmd, aEditKey); greeting=1; break;
 	  case aClearsign: set_cmd( &cmd, aClearsign); break;
+	  case aRingClearsign: set_cmd( &cmd, aRingClearsign); break;
 	  case aGenRevoke: set_cmd( &cmd, aGenRevoke); break;
 	  case aDesigRevoke: set_cmd( &cmd, aDesigRevoke); break;
 	  case aPrimegen: set_cmd( &cmd, aPrimegen); break;
@@ -3368,6 +3371,7 @@ main (int argc, char **argv )
       case aSign: 
       case aSignSym: 
       case aClearsign: 
+      case aRingClearsign: 
         if (!opt.quiet && any_explicit_recipient)
           log_info (_("WARNING: recipients (-r) given "
                       "without using public key encryption\n"));
@@ -3500,6 +3504,14 @@ main (int argc, char **argv )
 	    wrong_args(_("--clearsign [filename]"));
 	if( (rc = clearsign_file(fname, locusr, NULL)) )
 	    log_error("%s: clearsign failed: %s\n",
+                      print_fname_stdin(fname), g10_errstr(rc) );
+	break;
+
+      case aRingClearsign: /* make a ring clearsig */
+	if( argc > 1 )
+	    wrong_args(_("--ring-clearsign [filename]"));
+	if( (rc = ring_clearsign_file(fname, locusr, remusr, NULL)) )
+	    log_error("%s: ring clearsign failed: %s\n",
                       print_fname_stdin(fname), g10_errstr(rc) );
 	break;
 

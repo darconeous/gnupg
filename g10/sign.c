@@ -691,6 +691,132 @@ write_signature_packets (SK_LIST sk_list, IOBUF out, MD_HANDLE hash,
     return 0;
 }
 
+#define RINGSIG_MAX_SIZE 2
+
+static int
+write_ring_signature_packets (SK_LIST sk_list, PK_LIST pk_list, int idx, IOBUF out,
+			      MD_HANDLE hash, int sigclass, u32 timestamp, u32 duration,
+			      int status_letter)
+{
+    SK_LIST sk_rover;
+
+    /* loop over the secret certificates... */
+    for (sk_rover = sk_list; sk_rover; sk_rover = sk_rover->next) {
+	PKT_secret_key *sk;
+	PKT_signature *sig;
+	MD_HANDLE md;
+        int rc;
+	MPI v = mpi_alloc_set_ui(0); /* can be chosen randomly from [0, 2^b) */
+	MPI z = mpi_copy(v);
+
+	sk = sk_rover->sk;
+
+	/* build the signature packet */
+	sig = xmalloc_clear (sizeof *sig);
+	/* TODO: not sure what to do about this code */
+	if(opt.force_v3_sigs || RFC1991)
+	  sig->version=3;
+	else if(duration || opt.sig_policy_url
+		|| opt.sig_notations || opt.sig_keyserver_url)
+	  sig->version=4;
+	else
+	  sig->version=sk->version;
+	keyid_from_sk (sk, sig->keyid);
+	sig->digest_algo = hash_for(sk);
+	sig->pubkey_algo = sk->pubkey_algo;
+	if(timestamp)
+	  sig->timestamp = timestamp;
+	else
+	  sig->timestamp = make_timestamp();
+	if(duration)
+	  sig->expiredate = sig->timestamp+duration;
+	sig->sig_class = sigclass;
+
+	md = md_copy (hash);
+
+	if (sig->version >= 4)
+	  {
+	    build_sig_subpkt_from_sig (sig);
+	    mk_notation_policy_etc (sig, NULL, sk);
+	  }
+
+        hash_sigversion_to_magic (md, sig);
+	md_final (md);
+
+	/* Ok put the ring logic here */
+	MPI frame;
+	PK_LIST pk_rover;
+	PKT_public_key *pk;
+	int b = 4096; /* TODO: should set b to be larger than any of the keys - pubkey_nbits( pk->pubkey_algo, pk->pkey )*/
+	int n_bytes = b >> 3;
+	MPI x_list[RINGSIG_MAX_SIZE];
+	MPI y_list[RINGSIG_MAX_SIZE][PUBKEY_MAX_NENC];
+	int i, num_keys;
+
+	for (pk_rover = pk_list, num_keys = 0; pk_rover; pk_rover = pk_rover->next, num_keys++) {
+	    /* set b here*/
+	}
+
+	for (pk_rover = pk_list, i = 0; pk_rover; pk_rover = pk_rover->next, i++) {
+	    printf("NENC: %d\n", pubkey_get_nenc(pk_rover->pk->pubkey_algo));
+	    if (i != idx) {
+		byte *bits = get_random_bits(b, 1, 0);
+		mpi_set_buffer(x_list[i], bits, n_bytes, 1);
+		free(bits);
+
+		pk = pk_list->pk;
+		if ((rc = pubkey_encrypt(pk->pubkey_algo, y_list[i], x_list[i], pk->pkey)))
+		    return rc;
+	    }
+	}
+
+        frame = encode_md_value( NULL, sk, md, md_get_algo(md));
+        if (!frame)
+          return G10ERR_GENERAL;
+
+	for (i = 0; i < idx - 1; i++) {
+	    /* TODO: replace with xor, also don't just use [0] */
+	    mpi_add(v, v, y_list[i][0]);
+	    /* TODO: now encrypt using frame as a symmetric key */
+	}
+
+	for (i = num_keys - 1; i > idx; i--) {
+	    /* TODO: now decrypt using frame as a symmetric key */
+	    mpi_sub(z, z, y_list[i][0]);
+	}
+
+	/* z = E(v + y_idx) */
+	mpi_sub(y_list[idx][0], z, v);
+	MPI *x_idx;
+	if ((rc = pubkey_decrypt(sk->pubkey_algo, x_idx, y_list[idx], sk->skey)))
+	    return rc;
+	mpi_add_ui(x_list[idx], x_idx, 0);
+
+	rc = do_sign( sk, sig, md, hash_for (sk) );
+	md_close (md);
+
+	if( !rc ) { /* and write it */
+            PACKET pkt;
+
+	    init_packet(&pkt);
+	    pkt.pkttype = PKT_SIGNATURE;
+	    pkt.pkt.signature = sig;
+	    rc = build_packet (out, &pkt);
+	    if (!rc && is_status_enabled()) {
+		print_status_sig_created ( sk, sig, status_letter);
+	    }
+	    free_packet (&pkt);
+	    if (rc)
+		log_error ("build signature packet failed: %s\n",
+                           g10_errstr(rc) );
+	}
+	if( rc )
+	    return rc;;
+    }
+
+    return 0;
+}
+
 /****************
  * Sign the files whose names are in FILENAME.
  * If DETACHED has the value true,
@@ -1030,7 +1156,132 @@ sign_file( STRLIST filenames, int detached, STRLIST locusr,
     return rc;
 }
 
+/****************
+ * make a clear ring signature.
+ */
+int
+ring_clearsign_file( const char *fname, STRLIST locusr, STRLIST remusr, const char *outfile )
+{
+    armor_filter_context_t afx;
+    progress_filter_context_t pfx;
+    IOBUF inp = NULL, out = NULL;
+    int rc = 0;
+    MD_HANDLE textmd = NULL;
+    PK_LIST pk_list;
+    SK_LIST sk_list = NULL;
+    SK_LIST sk_rover = NULL;
+    u32 create_time=make_timestamp(),duration=0;
 
+    memset( &afx, 0, sizeof afx);
+
+    /* prepare iobufs */
+    inp = iobuf_open(fname);
+    if (inp && is_secured_file (iobuf_get_fd (inp)))
+      {
+        iobuf_close (inp);
+        inp = NULL;
+        errno = EPERM;
+      }
+    if( !inp ) {
+	log_error(_("can't open `%s': %s\n"), fname? fname: "[stdin]",
+					strerror(errno) );
+	rc = G10ERR_OPEN_FILE;
+	goto leave;
+    }
+
+    handle_progress (&pfx, inp, fname);
+
+    if( outfile ) {
+        if (is_secured_filename (outfile) ) {
+            outfile = NULL;
+            errno = EPERM;
+        }
+        else 
+            out = iobuf_create( outfile );
+	if( !out )
+	  {
+	    log_error(_("can't create `%s': %s\n"), outfile, strerror(errno) );
+	    rc = G10ERR_CREATE_FILE;
+	    goto leave;
+	  }
+	else if( opt.verbose )
+	    log_info(_("writing to `%s'\n"), outfile );
+    }
+    else if( (rc = open_outfile( fname, 1, &out )) )
+	goto leave;
+
+    if( (rc=build_pk_list( remusr, &pk_list, PUBKEY_USAGE_ENC)) )
+	goto leave;
+
+    if( (rc=build_sk_list( locusr, &sk_list, 1, PUBKEY_USAGE_SIG )) )
+	goto leave;
+
+    /* Do actual work */
+
+    iobuf_writestr(out, "-----BEGIN PGP RING SIGNED MESSAGE-----" LF );
+
+    /* add old_style and only only_md5 check */
+    if (1) {
+    	const char *s;
+	int any = 0;
+	byte hashs_seen[256];
+
+	memset( hashs_seen, 0, sizeof hashs_seen );
+	iobuf_writestr(out, "Hash: " );
+	for( sk_rover = sk_list; sk_rover; sk_rover = sk_rover->next ) {
+	    PKT_secret_key *sk = sk_rover->sk;
+	    int i = hash_for(sk);
+
+	    if( !hashs_seen[ i & 0xff ] ) {
+		s = digest_algo_to_string( i );
+		if( s ) {
+		    hashs_seen[ i & 0xff ] = 1;
+		    if( any )
+			iobuf_put(out, ',' );
+		    iobuf_writestr(out, s );
+		    any = 1;
+		}
+	    }
+	}
+	assert(any);
+	iobuf_writestr(out, LF );
+    }
+
+    if( opt.not_dash_escaped )
+      iobuf_writestr( out,
+		  "NotDashEscaped: You need GnuPG to verify this message (not a huge deal, since only GnuPG can verify this message anyway)" LF );
+    iobuf_writestr(out, LF );
+
+    textmd = md_open(0, 0);
+    for( sk_rover = sk_list; sk_rover; sk_rover = sk_rover->next ) {
+	PKT_secret_key *sk = sk_rover->sk;
+	md_enable(textmd, hash_for(sk));
+    }
+    if ( DBG_HASHING )
+	md_start_debug( textmd, "clearsign" );
+
+    copy_clearsig_text( out, inp, textmd, !opt.not_dash_escaped,
+			opt.escape_from, 0 );
+
+    afx.what = 2;
+    iobuf_push_filter( out, armor_filter, &afx );
+    /* TODO: figure out correct idx */
+    rc = write_ring_signature_packets (sk_list, pk_list, out, 0, textmd, 0x01,
+				       create_time, duration, 'C');
+    if( rc )
+        goto leave;
+
+ leave:
+    md_close( textmd );
+    release_sk_list( sk_list );
+    release_pk_list( pk_list );
+    if( rc )
+	iobuf_cancel(out);
+    else
+	iobuf_close(out);
+    iobuf_close(inp);
+    return rc;
+}
 
 /****************
  * make a clear signature. note that opt.armor is not needed

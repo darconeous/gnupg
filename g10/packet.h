@@ -50,6 +50,7 @@ typedef enum {
 	PKT_ATTRIBUTE     =17, /* PGP's attribute packet */
 	PKT_ENCRYPTED_MDC =18, /* integrity protected encrypted data */
 	PKT_MDC 	  =19, /* manipulation detection code packet */
+	PKT_RING_SIG	  =20, /* ring signature packet */
 	PKT_COMMENT	  =61, /* new comment packet (private) */
         PKT_GPG_CONTROL   =63  /* internal control packet */
 } pkttype_t;
