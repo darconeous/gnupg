@@ -747,24 +747,38 @@ write_ring_signature_packets (SK_LIST sk_list, PK_LIST pk_list, int idx, IOBUF o
 	MPI frame;
 	PK_LIST pk_rover;
 	PKT_public_key *pk;
-	int b = 4096; /* TODO: should set b to be larger than any of the keys - pubkey_nbits( pk->pubkey_algo, pk->pkey )*/
-	int n_bytes = b >> 3;
+	int nbits = 4096; /* b in paper.  TODO: should set b to be larger than any of the keys - pubkey_nbits( pk->pubkey_algo, pk->pkey )*/
+	int nbytes = nbits/8;
 	MPI x_list[RINGSIG_MAX_SIZE];
 	MPI y_list[RINGSIG_MAX_SIZE][PUBKEY_MAX_NENC];
 	int i, num_keys;
 
 	for (pk_rover = pk_list, num_keys = 0; pk_rover; pk_rover = pk_rover->next, num_keys++) {
-	    /* set b here*/
+	    /* May want to leave a couple hundred padding bits */
+	    int pk_nbits;
+	    pk = pk_rover->pk;
+	    pk_nbits = pubkey_nbits(pk->pubkey_algo, pk->pkey);
+	    if (pk_nbits > nbits)
+		nbits = pk_nbits;
+	    if (pubkey_get_npkey(pk->pubkey_algo) != 3) {
+		log_error("Currently only allow algos with 3 keys (and assume that the second is the significant one).  You have specified a key with %d keys\n", pubkey_get_npkey(pk->pubkey_algo));
+		return 1;
+	    }
+	}
+
+	if (num_keys > RINGSIG_MAX_SIZE) {
+            log_error("Current ring size is limited to %d public keys\n", RINGSIG_MAX_SIZE);
+	    return 1;
 	}
 
 	for (pk_rover = pk_list, i = 0; pk_rover; pk_rover = pk_rover->next, i++) {
-	    printf("NENC: %d\n", pubkey_get_nenc(pk_rover->pk->pubkey_algo));
 	    if (i != idx) {
-		byte *bits = get_random_bits(b, 1, 0);
-		mpi_set_buffer(x_list[i], bits, n_bytes, 1);
-		free(bits);
+		char *rndbuf = get_random_bits(nbits, 1, 0);
+		x_list[i] = mpi_alloc(1);
+		mpi_set_buffer(x_list[i], rndbuf, nbytes, 1);
+		free(rndbuf);
 
-		pk = pk_list->pk;
+		pk = pk_rover->pk;
 		if ((rc = pubkey_encrypt(pk->pubkey_algo, y_list[i], x_list[i], pk->pkey)))
 		    return rc;
 	    }
@@ -786,9 +800,10 @@ write_ring_signature_packets (SK_LIST sk_list, PK_LIST pk_list, int idx, IOBUF o
 	}
 
 	/* z = E(v + y_idx) */
+	y_list[idx][0] = mpi_alloc(1);
 	mpi_sub(y_list[idx][0], z, v);
-	MPI *x_idx;
-	if ((rc = pubkey_decrypt(sk->pubkey_algo, x_idx, y_list[idx], sk->skey)))
+	MPI x_idx;
+	if ((rc = pubkey_decrypt(sk->pubkey_algo, &x_idx, y_list[idx], sk->skey)))
 	    return rc;
 	mpi_add_ui(x_list[idx], x_idx, 0);
 
@@ -1266,7 +1281,7 @@ ring_clearsign_file( const char *fname, STRLIST locusr, STRLIST remusr, const ch
     afx.what = 2;
     iobuf_push_filter( out, armor_filter, &afx );
     /* TODO: figure out correct idx */
-    rc = write_ring_signature_packets (sk_list, pk_list, out, 0, textmd, 0x01,
+    rc = write_ring_signature_packets (sk_list, pk_list, 0, out, textmd, 0x01,
 				       create_time, duration, 'C');
     if( rc )
         goto leave;
