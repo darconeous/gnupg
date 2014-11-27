@@ -88,6 +88,7 @@ struct slot_status_s
                  tracking for the slot has been initialized.  */
   unsigned int status;  /* Last status of the slot. */
   unsigned int changed; /* Last change counter of the slot. */
+  int last_active; /* Unix time stamp from moment of last activity */
 };
 
 
@@ -474,6 +475,7 @@ open_card (ctrl_t ctrl, const char *apptype)
       int sw;
 
       ctrl->server_local->disconnect_allowed = 0;
+	  slot_table[slot].last_active = time(NULL);
       sw = apdu_connect (slot);
       if (sw && sw != SW_HOST_ALREADY_CONNECTED)
         {
@@ -1749,8 +1751,10 @@ cmd_restart (assuan_context_t ctx, char *line)
 
   (void)line;
 
+  ctrl->server_local->disconnect_allowed = 1;
   if (ctrl->app_ctx)
     {
+      slot_table[ctrl->reader_slot].last_active = time(NULL);
       release_application (ctrl->app_ctx);
       ctrl->app_ctx = NULL;
     }
@@ -2035,6 +2039,8 @@ scd_command_handler (ctrl_t ctrl, int fd)
           continue;
         }
     }
+
+  slot_table[ctrl->reader_slot].last_active = time(NULL);
 
   /* Cleanup.  We don't send an explicit reset to the card.  */
   do_reset (ctrl, 0);
@@ -2326,12 +2332,13 @@ update_reader_status_file (int set_card_removed_flag)
           for (sl=session_list; sl; sl = sl->next_session)
             if (!sl->disconnect_allowed)
               break;
-          if (session_list && !sl)
+          if (session_list && !sl && (slot_table[ss->slot].last_active+opt.card_timeout<time(NULL)))
             {
               /* FIXME: Use a real timeout.  */
               /* At least one connection and all allow a disconnect.  */
               log_info ("disconnecting card in slot %d\n", ss->slot);
               apdu_disconnect (ss->slot);
+              sl->disconnect_allowed = 0;
             }
         }
 
