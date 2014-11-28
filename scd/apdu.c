@@ -2031,11 +2031,15 @@ reset_pcsc_reader_wrapped (int slot)
 static int
 reset_pcsc_reader (int slot)
 {
+  int sw;
+  end_pcsc_transaction(slot);
 #ifdef NEED_PCSC_WRAPPER
-  return reset_pcsc_reader_wrapped (slot);
+  sw = reset_pcsc_reader_wrapped (slot);
 #else
-  return reset_pcsc_reader_direct (slot);
+  sw = reset_pcsc_reader_direct (slot);
 #endif
+  begin_pcsc_transaction(slot);
+  return sw;
 }
 
 
@@ -3550,6 +3554,9 @@ apdu_connect (int slot)
   else if ((status & APDU_CARD_PRESENT) && !(status & APDU_CARD_ACTIVE))
     sw = SW_HOST_CARD_INACTIVE;
 
+  if (!sw)
+    begin_pcsc_transaction(slot);
+
 
   return sw;
 }
@@ -3562,6 +3569,8 @@ apdu_disconnect (int slot)
 
   if (slot < 0 || slot >= MAX_READER || !reader_table[slot].used )
     return SW_HOST_NO_DRIVER;
+
+  end_pcsc_transaction(slot);
 
   if (reader_table[slot].disconnect_card)
     {
