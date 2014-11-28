@@ -561,6 +561,62 @@ handle_close (unsigned char *argbuf, size_t arglen)
 }
 
 
+/* Handle a begin transaction request.  We expect no arguments. */
+static void
+handle_begin_transaction (unsigned char *argbuf, size_t arglen)
+{
+  int status;
+  (void)argbuf;
+  (void)arglen;
+
+  if (!driver_is_open)
+    {
+      fprintf (stderr, PGM ": PC/SC has not yet been opened\n");
+      request_failed (-1);
+      return;
+    }
+
+  status = pcsc_begin_transaction (pcsc_card);
+  if (status)
+    {
+      fprintf (stderr, PGM": pcsc_begin_transaction failed: %s (0x%lx)\n",
+               pcsc_error_string (status), status);
+      request_failed (status);
+      return;
+    }
+
+  request_succeeded (NULL, 0);
+}
+
+/* Handle a end transaction request.  We expect no arguments. */
+static void
+handle_end_transaction (unsigned char *argbuf, size_t arglen)
+{
+  int status;
+  (void)argbuf;
+  (void)arglen;
+
+  if (!driver_is_open)
+    {
+      fprintf (stderr, PGM ": PC/SC has not yet been opened\n");
+      request_failed (-1);
+      return;
+    }
+
+  status = pcsc_end_transaction (pcsc_card, PCSC_LEAVE_CARD);
+  if (status)
+    {
+      fprintf (stderr, PGM": pcsc_end_transaction failed: %s (0x%lx)\n",
+               pcsc_error_string (status), status);
+      request_failed (status);
+      return;
+    }
+
+  request_succeeded (NULL, 0);
+}
+
+
+
 
 /* Handle a status request.  We expect no arguments.  We may modifiy
    ARGBUF. */
@@ -891,6 +947,14 @@ main (int argc, char **argv)
 
         case 6:
           handle_control (argbuffer, arglen);
+          break;
+
+		case 7:
+          handle_begin_transaction (argbuffer, arglen);
+          break;
+
+		case 8:
+          handle_end_transaction (argbuffer, arglen);
           break;
 
         default:

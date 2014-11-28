@@ -107,6 +107,8 @@ struct reader_table_s {
   int (*set_progress_cb)(int, gcry_handler_progress_t, void*);
   int (*pinpad_verify)(int, int, int, int, int, pininfo_t *);
   int (*pinpad_modify)(int, int, int, int, int, pininfo_t *);
+  int (*begin_transaction)(int);
+  int (*end_transaction)(int);
 
   struct {
     ccid_driver_t handle;
@@ -144,6 +146,7 @@ struct reader_table_s {
                               not yet been read; i.e. the card is not
                               ready for use. */
   unsigned int change_counter;
+  int is_in_transaction;
 #ifdef USE_GNU_PTH
   int lock_initialized;
   pth_mutex_t lock;
@@ -439,6 +442,8 @@ new_reader_slot (void)
   reader_table[reader].set_progress_cb = NULL;
   reader_table[reader].pinpad_verify = pcsc_pinpad_verify;
   reader_table[reader].pinpad_modify = pcsc_pinpad_modify;
+  reader_table[reader].begin_transaction = NULL;
+  reader_table[reader].end_transaction = NULL;
 
   reader_table[reader].used = 1;
   reader_table[reader].any_status = 0;
@@ -732,6 +737,8 @@ open_ct_reader (int port)
   reader_table[reader].dump_status_reader = ct_dump_reader_status;
   reader_table[reader].pinpad_verify = NULL;
   reader_table[reader].pinpad_modify = NULL;
+  reader_table[reader].begin_transaction = NULL;
+  reader_table[reader].end_transaction = NULL;
 
   dump_reader_status (reader);
   unlock_slot (reader);
@@ -1590,6 +1597,318 @@ disconnect_pcsc_card (int slot)
 #endif /*!NEED_PCSC_WRAPPER*/
 
 
+
+#ifndef NEED_PCSC_WRAPPER
+static int
+begin_pcsc_transaction_direct (int slot)
+{
+  long err;
+
+  assert (slot >= 0 && slot < MAX_READER);
+
+  if (!reader_table[slot].pcsc.card)
+    return 0;
+
+  err = pcsc_begin_transaction (reader_table[slot].pcsc.card);
+  if (err)
+    {
+      log_error ("pcsc_begin_transaction failed: %s (0x%lx)\n",
+                 pcsc_error_string (err), err);
+      return SW_HOST_CARD_IO_ERROR;
+    }
+  return 0;
+}
+#endif /*NEED_PCSC_WRAPPER*/
+
+
+#ifdef NEED_PCSC_WRAPPER
+static int
+begin_pcsc_transaction_wrapped (int slot)
+{
+  long err;
+  reader_table_t slotp;
+  size_t len;
+  int i, n;
+  unsigned char msgbuf[9];
+  unsigned int dummy_status;
+  int sw = SW_HOST_CARD_IO_ERROR;
+
+  slotp = reader_table + slot;
+
+  if (slotp->pcsc.req_fd == -1
+      || slotp->pcsc.rsp_fd == -1
+      || slotp->pcsc.pid == (pid_t)(-1) )
+    {
+      log_error ("pcsc_get_status: pcsc-wrapper not running\n");
+      return sw;
+    }
+
+  msgbuf[0] = 0x07; /* BEGIN_TRANSACTION command. */
+  len = 0;
+  msgbuf[1] = (len >> 24);
+  msgbuf[2] = (len >> 16);
+  msgbuf[3] = (len >>  8);
+  msgbuf[4] = (len      );
+  if ( writen (slotp->pcsc.req_fd, msgbuf, 5) )
+    {
+      log_error ("error sending PC/SC BEGIN_TRANSACTION request: %s\n",
+                 strerror (errno));
+      goto command_failed;
+    }
+
+  /* Read the response. */
+  if ((i=readn (slotp->pcsc.rsp_fd, msgbuf, 9, &len)) || len != 9)
+    {
+      log_error ("error receiving PC/SC BEGIN_TRANSACTION response: %s\n",
+                 i? strerror (errno) : "premature EOF");
+      goto command_failed;
+    }
+  len = (msgbuf[1] << 24) | (msgbuf[2] << 16) | (msgbuf[3] << 8 ) | msgbuf[4];
+  if (msgbuf[0] != 0x81 || len < 4)
+    {
+      log_error ("invalid response header from PC/SC received\n");
+      goto command_failed;
+    }
+  len -= 4; /* Already read the error code. */
+  if (len > DIM (slotp->atr))
+    {
+      log_error ("PC/SC returned a too large ATR (len=%lx)\n",
+                 (unsigned long)len);
+      sw = SW_HOST_GENERAL_ERROR;
+      goto command_failed;
+    }
+  err = PCSC_ERR_MASK ((msgbuf[5] << 24) | (msgbuf[6] << 16)
+                       | (msgbuf[7] << 8 ) | msgbuf[8]);
+  if (err)
+    {
+      log_error ("PC/SC BEGIN_TRANSACTION failed: %s (0x%lx)\n",
+                 pcsc_error_string (err), err);
+      /* If the error code is no smart card, we should not considere
+         this a major error and close the wrapper.  */
+      sw = pcsc_error_to_sw (err);
+      if (err == PCSC_E_NO_SMARTCARD)
+        return sw;
+      goto command_failed;
+    }
+
+  /* The open function may return a zero for the ATR length to
+     indicate that no card is present.  */
+  n = len;
+  if (n)
+    {
+      if ((i=readn (slotp->pcsc.rsp_fd, slotp->atr, n, &len)) || len != n)
+        {
+          log_error ("error receiving PC/SC BEGIN_TRANSACTION response: %s\n",
+                     i? strerror (errno) : "premature EOF");
+          goto command_failed;
+        }
+    }
+  slotp->atrlen = len;
+
+  return 0;
+
+ command_failed:
+  close (slotp->pcsc.req_fd);
+  close (slotp->pcsc.rsp_fd);
+  slotp->pcsc.req_fd = -1;
+  slotp->pcsc.rsp_fd = -1;
+  kill (slotp->pcsc.pid, SIGTERM);
+  slotp->pcsc.pid = (pid_t)(-1);
+  slotp->used = 0;
+  return sw;
+}
+#endif /* !NEED_PCSC_WRAPPER */
+
+
+/* Send an PC/SC reset command and return a status word on error or 0
+   on success. */
+static int
+begin_pcsc_transaction (int slot)
+{
+//    if (!reader_table[slot].pcsc.card)
+//		return 0;
+  if(reader_table[slot].is_in_transaction)
+	return 0;
+  reader_table[slot].is_in_transaction = 1;
+  log_error(" ---- begin transaction ----\n");
+#ifdef NEED_PCSC_WRAPPER
+  return begin_pcsc_transaction_wrapped (slot);
+#else
+  return begin_pcsc_transaction_direct (slot);
+#endif
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#ifndef NEED_PCSC_WRAPPER
+static int
+end_pcsc_transaction_direct (int slot)
+{
+  long err;
+
+  assert (slot >= 0 && slot < MAX_READER);
+
+  if (!reader_table[slot].pcsc.card)
+    return 0;
+
+  err = pcsc_end_transaction (reader_table[slot].pcsc.card);
+  if (err)
+    {
+      log_error ("pcsc_end_transaction failed: %s (0x%lx)\n",
+                 pcsc_error_string (err), err);
+      return SW_HOST_CARD_IO_ERROR;
+    }
+  return 0;
+}
+#endif /*NEED_PCSC_WRAPPER*/
+
+
+#ifdef NEED_PCSC_WRAPPER
+static int
+end_pcsc_transaction_wrapped (int slot)
+{
+  long err;
+  reader_table_t slotp;
+  size_t len;
+  int i, n;
+  unsigned char msgbuf[9];
+  unsigned int dummy_status;
+  int sw = SW_HOST_CARD_IO_ERROR;
+
+  slotp = reader_table + slot;
+
+  if (slotp->pcsc.req_fd == -1
+      || slotp->pcsc.rsp_fd == -1
+      || slotp->pcsc.pid == (pid_t)(-1) )
+    {
+      log_error ("pcsc_get_status: pcsc-wrapper not running\n");
+      return sw;
+    }
+
+  msgbuf[0] = 0x08; /* END_TRANSACTION command. */
+  len = 0;
+  msgbuf[1] = (len >> 24);
+  msgbuf[2] = (len >> 16);
+  msgbuf[3] = (len >>  8);
+  msgbuf[4] = (len      );
+  if ( writen (slotp->pcsc.req_fd, msgbuf, 5) )
+    {
+      log_error ("error sending PC/SC END_TRANSACTION request: %s\n",
+                 strerror (errno));
+      goto command_failed;
+    }
+
+  /* Read the response. */
+  if ((i=readn (slotp->pcsc.rsp_fd, msgbuf, 9, &len)) || len != 9)
+    {
+      log_error ("error receiving PC/SC END_TRANSACTION response: %s\n",
+                 i? strerror (errno) : "premature EOF");
+      goto command_failed;
+    }
+  len = (msgbuf[1] << 24) | (msgbuf[2] << 16) | (msgbuf[3] << 8 ) | msgbuf[4];
+  if (msgbuf[0] != 0x81 || len < 4)
+    {
+      log_error ("invalid response header from PC/SC received\n");
+      goto command_failed;
+    }
+  len -= 4; /* Already read the error code. */
+  if (len > DIM (slotp->atr))
+    {
+      log_error ("PC/SC returned a too large ATR (len=%lx)\n",
+                 (unsigned long)len);
+      sw = SW_HOST_GENERAL_ERROR;
+      goto command_failed;
+    }
+  err = PCSC_ERR_MASK ((msgbuf[5] << 24) | (msgbuf[6] << 16)
+                       | (msgbuf[7] << 8 ) | msgbuf[8]);
+  if (err)
+    {
+      log_error ("PC/SC END_TRANSACTION failed: %s (0x%lx)\n",
+                 pcsc_error_string (err), err);
+      /* If the error code is no smart card, we should not considere
+         this a major error and close the wrapper.  */
+      sw = pcsc_error_to_sw (err);
+      if (err == PCSC_E_NO_SMARTCARD)
+        return sw;
+      goto command_failed;
+    }
+
+  /* The open function may return a zero for the ATR length to
+     indicate that no card is present.  */
+  n = len;
+  if (n)
+    {
+      if ((i=readn (slotp->pcsc.rsp_fd, slotp->atr, n, &len)) || len != n)
+        {
+          log_error ("error receiving PC/SC END_TRANSACTION response: %s\n",
+                     i? strerror (errno) : "premature EOF");
+          goto command_failed;
+        }
+    }
+  slotp->atrlen = len;
+
+  return 0;
+
+ command_failed:
+  close (slotp->pcsc.req_fd);
+  close (slotp->pcsc.rsp_fd);
+  slotp->pcsc.req_fd = -1;
+  slotp->pcsc.rsp_fd = -1;
+  kill (slotp->pcsc.pid, SIGTERM);
+  slotp->pcsc.pid = (pid_t)(-1);
+  slotp->used = 0;
+  return sw;
+}
+#endif /* !NEED_PCSC_WRAPPER */
+
+
+/* Send an PC/SC reset command and return a status word on error or 0
+   on success. */
+static int
+end_pcsc_transaction (int slot)
+{
+//    if (!reader_table[slot].pcsc.card)
+//		return 0;
+  if(!reader_table[slot].is_in_transaction)
+	return 0;
+  reader_table[slot].is_in_transaction = 0;
+  log_error(" ---- end transaction ----\n");
+#ifdef NEED_PCSC_WRAPPER
+  return end_pcsc_transaction_wrapped (slot);
+#else
+  return end_pcsc_transaction_direct (slot);
+#endif
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 #ifndef NEED_PCSC_WRAPPER
 static int
 reset_pcsc_reader_direct (int slot)
@@ -1958,6 +2277,8 @@ open_pcsc_reader_direct (const char *portstr)
   reader_table[slot].get_status_reader = pcsc_get_status;
   reader_table[slot].send_apdu_reader = pcsc_send_apdu;
   reader_table[slot].dump_status_reader = dump_pcsc_reader_status;
+  reader_table[slot].begin_transaction = begin_pcsc_transaction;
+  reader_table[slot].end_transaction = end_pcsc_transaction;
 
   dump_reader_status (slot);
   unlock_slot (slot);
@@ -2162,6 +2483,8 @@ open_pcsc_reader_wrapped (const char *portstr)
   reader_table[slot].get_status_reader = pcsc_get_status;
   reader_table[slot].send_apdu_reader = pcsc_send_apdu;
   reader_table[slot].dump_status_reader = dump_pcsc_reader_status;
+  reader_table[slot].begin_transaction = begin_pcsc_transaction;
+  reader_table[slot].end_transaction = end_pcsc_transaction;
 
   pcsc_vendor_specific_init (slot);
 
@@ -2597,6 +2920,8 @@ open_ccid_reader (const char *portstr)
   reader_table[slot].set_progress_cb = set_progress_cb_ccid_reader;
   reader_table[slot].pinpad_verify = ccid_pinpad_operation;
   reader_table[slot].pinpad_modify = ccid_pinpad_operation;
+  reader_table[slot].begin_transaction = NULL;
+  reader_table[slot].end_transaction = NULL;
   /* Our CCID reader code does not support T=0 at all, thus reset the
      flag.  */
   reader_table[slot].is_t0 = 0;
@@ -2893,6 +3218,8 @@ open_rapdu_reader (int portno,
   reader_table[slot].dump_status_reader = NULL;
   reader_table[slot].pinpad_verify = NULL;
   reader_table[slot].pinpad_modify = NULL;
+  reader_table[slot].begin_transaction = NULL;
+  reader_table[slot].end_transaction = NULL;
 
   dump_reader_status (slot);
   rapdu_msg_release (msg);
