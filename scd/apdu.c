@@ -1523,7 +1523,7 @@ connect_pcsc_card (int slot)
 
   err = pcsc_connect (reader_table[slot].pcsc.context,
                       reader_table[slot].rdrname,
-                      PCSC_SHARE_EXCLUSIVE,
+                      PCSC_SHARE_SHARED,
                       PCSC_PROTOCOL_T0|PCSC_PROTOCOL_T1,
                       &reader_table[slot].pcsc.card,
                       &reader_table[slot].pcsc.protocol);

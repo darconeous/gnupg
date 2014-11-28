@@ -86,6 +86,8 @@ typedef unsigned long pcsc_dword_t;
 #define PCSC_SHARE_SHARED    2
 #define PCSC_SHARE_DIRECT    3
 
+#define SHARE_MODE PCSC_SHARE_SHARED
+
 #define PCSC_LEAVE_CARD      0
 #define PCSC_RESET_CARD      1
 #define PCSC_UNPOWER_CARD    2
@@ -481,7 +483,7 @@ handle_open (unsigned char *argbuf, size_t arglen)
 
   err = pcsc_connect (pcsc_context,
                       current_rdrname,
-                      PCSC_SHARE_EXCLUSIVE,
+                      SHARE_MODE,
                       PCSC_PROTOCOL_T0|PCSC_PROTOCOL_T1,
                       &pcsc_card,
                       &pcsc_protocol);
@@ -667,7 +669,7 @@ handle_status (unsigned char *argbuf, size_t arglen)
          application.  This is because we only use exclusive access
          mode.  */
       if ( (status & 6) == 6
-           && !(rdrstates[0].event_state & PCSC_STATE_INUSE) )
+	  )
         status |= 1;
     }
 
@@ -728,7 +730,7 @@ handle_reset (unsigned char *argbuf, size_t arglen)
 
   err = pcsc_connect (pcsc_context,
                       current_rdrname,
-                      PCSC_SHARE_EXCLUSIVE,
+                      SHARE_MODE,
                       PCSC_PROTOCOL_T0|PCSC_PROTOCOL_T1,
                       &pcsc_card,
                       &pcsc_protocol);
