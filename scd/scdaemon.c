@@ -602,7 +602,8 @@ main (int argc, char **argv )
           break;
         case oDenyAdmin: opt.allow_admin = 0; break;
 
-        case oCardTimeout: opt.card_timeout = pargs.r.ret_ulong; break;
+        case oCardTimeout: opt.card_timeout = pargs.r.ret_ulong;
+		fprintf(stderr,"card timeout set to %d\n", opt.card_timeout);break;
 
         case oDisableApplication:
           add_to_strlist (&opt.disabled_applications, pargs.r.ret_str);

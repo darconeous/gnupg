@@ -1684,7 +1684,7 @@ verify_a_chv (app_t app,
 
   if (rc)
     {
-      log_error (_("verify CHV%d failed: %s\n"), chvno, gpg_strerror (rc));
+      log_error (_("%s:%d: verify CHV%d failed: %s\n"),__FILE__,__LINE__, chvno, gpg_strerror (rc));
       xfree (*pinvalue);
       *pinvalue = NULL;
       flush_cache_after_error (app);
@@ -1723,7 +1723,8 @@ verify_chv2 (app_t app,
         rc = gpg_error (GPG_ERR_PIN_NOT_SYNCED);
       if (rc)
         {
-          log_error (_("verify CHV%d failed: %s\n"), 1, gpg_strerror (rc));
+      //    log_error (_("verify CHV%d failed: %s\n"), 1, gpg_strerror (rc));
+      log_error (_("%s:%d: verify CHV%d failed: %s\n"),__FILE__,__LINE__, 1, gpg_strerror (rc));
           flush_cache_after_error (app);
         }
       else
@@ -1862,7 +1863,8 @@ verify_chv3 (app_t app,
 
       if (rc)
         {
-          log_error (_("verify CHV%d failed: %s\n"), 3, gpg_strerror (rc));
+      log_error (_("%s:%d: verify CHV%d failed: %s\n"),__FILE__,__LINE__, 3, gpg_strerror (rc));
+      //    log_error (_("verify CHV%d failed: %s\n"), 3, gpg_strerror (rc));
           flush_cache_after_error (app);
           return rc;
         }
@@ -3395,7 +3397,8 @@ do_sign (app_t app, const char *keyidstr, int hashalgo,
             rc = gpg_error (GPG_ERR_PIN_NOT_SYNCED);
           if (rc)
             {
-              log_error (_("verify CHV%d failed: %s\n"), 2, gpg_strerror (rc));
+      log_error (_("%s:%d: verify CHV%d failed: %s\n"),__FILE__,__LINE__, 2, gpg_strerror (rc));
+      //        log_error (_("verify CHV%d failed: %s\n"), 2, gpg_strerror (rc));
               xfree (pinvalue);
               flush_cache_after_error (app);
               return rc;

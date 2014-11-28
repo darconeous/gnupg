@@ -63,7 +63,7 @@
 #define DEFAULT_PCSC_DRIVER "libpcsclite.so"
 
 
-static int verbose;
+static int verbose = 1;
 
 #if defined(__APPLE__) || defined(_WIN32) || defined(__CYGWIN__)
 typedef unsigned int pcsc_dword_t;
@@ -86,6 +86,7 @@ typedef unsigned long pcsc_dword_t;
 #define PCSC_SHARE_SHARED    2
 #define PCSC_SHARE_DIRECT    3
 
+//#define SHARE_MODE PCSC_SHARE_EXCLUSIVE
 #define SHARE_MODE PCSC_SHARE_SHARED
 
 #define PCSC_LEAVE_CARD      0
@@ -669,6 +670,7 @@ handle_status (unsigned char *argbuf, size_t arglen)
          application.  This is because we only use exclusive access
          mode.  */
       if ( (status & 6) == 6
+//           && !(rdrstates[0].event_state & PCSC_STATE_INUSE)
 	  )
         status |= 1;
     }
@@ -712,6 +714,8 @@ handle_reset (unsigned char *argbuf, size_t arglen)
       request_failed (-1);
       return;
     }
+
+  fprintf (stderr, PGM ": handle_reset\n");
 
   if (pcsc_card)
     {

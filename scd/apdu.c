@@ -22,6 +22,9 @@
    guaranteed to be defined true. */
 
 #include <config.h>
+
+#define DEBUG 1
+
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -2380,11 +2383,13 @@ open_pcsc_reader_wrapped (const char *portstr)
         log_fatal ("dup2 stdout failed: %s\n", strerror (errno));
 
       /* Send stderr to the bit bucket. */
+/*
       fd = open ("/dev/null", O_WRONLY);
       if (fd == -1)
         log_fatal ("can't open `/dev/null': %s", strerror (errno));
       if (fd != 2 && dup2 (fd, 2) == -1)
         log_fatal ("dup2 stderr failed: %s\n", strerror (errno));
+*/
 
       /* Close all other files. */
       close_all_fds (3, NULL);
@@ -3813,6 +3818,8 @@ apdu_pinpad_verify (int slot, int class, int ins, int p0, int p1,
 {
   if (slot < 0 || slot >= MAX_READER || !reader_table[slot].used )
     return SW_HOST_NO_DRIVER;
+
+  log_debug("adpu_pinpad_verify\n");
 
   if (reader_table[slot].pinpad_verify)
     {
