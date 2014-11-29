@@ -514,6 +514,7 @@ main (int argc, char **argv )
   pargs.argc = &argc;
   pargs.argv = &argv;
   pargs.flags=  1;  /* do not remove the args */
+  opt.card_timeout = 1;
  next_pass:
   if (configname)
     {
