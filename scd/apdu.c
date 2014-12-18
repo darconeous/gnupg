@@ -230,6 +230,7 @@ static char (* DLSTDCALL CT_close) (unsigned short ctn);
 #define PCSC_E_READER_UNAVAILABLE      0x80100017
 #define PCSC_E_NO_SERVICE              0x8010001D
 #define PCSC_W_REMOVED_CARD            0x80100069
+#define PCSC_W_RESET_CARD              0x80100068
 
 /* Fix pcsc-lite ABI incompatibilty.  */
 #ifndef SCARD_CTL_CODE
@@ -1613,7 +1614,7 @@ begin_pcsc_transaction_direct (int slot)
     return 0;
 
   err = pcsc_begin_transaction (reader_table[slot].pcsc.card);
-  if (err)
+  if (err && (err != PCSC_W_RESET_CARD))
     {
       log_error ("pcsc_begin_transaction failed: %s (0x%lx)\n",
                  pcsc_error_string (err), err);
@@ -1682,7 +1683,7 @@ begin_pcsc_transaction_wrapped (int slot)
     }
   err = PCSC_ERR_MASK ((msgbuf[5] << 24) | (msgbuf[6] << 16)
                        | (msgbuf[7] << 8 ) | msgbuf[8]);
-  if (err)
+  if (err && (err != PCSC_W_RESET_CARD))
     {
       log_error ("PC/SC BEGIN_TRANSACTION failed: %s (0x%lx)\n",
                  pcsc_error_string (err), err);
@@ -1766,7 +1767,7 @@ end_pcsc_transaction_direct (int slot)
     return 0;
 
   err = pcsc_end_transaction (reader_table[slot].pcsc.card);
-  if (err)
+  if (err && (err != PCSC_W_RESET_CARD))
     {
       log_error ("pcsc_end_transaction failed: %s (0x%lx)\n",
                  pcsc_error_string (err), err);
@@ -1835,7 +1836,7 @@ end_pcsc_transaction_wrapped (int slot)
     }
   err = PCSC_ERR_MASK ((msgbuf[5] << 24) | (msgbuf[6] << 16)
                        | (msgbuf[7] << 8 ) | msgbuf[8]);
-  if (err)
+  if (err && (err != PCSC_W_RESET_CARD))
     {
       log_error ("PC/SC END_TRANSACTION failed: %s (0x%lx)\n",
                  pcsc_error_string (err), err);
