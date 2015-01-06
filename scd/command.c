@@ -2332,13 +2332,16 @@ update_reader_status_file (int set_card_removed_flag)
           for (sl=session_list; sl; sl = sl->next_session)
             if (!sl->disconnect_allowed)
               break;
-          if (session_list && !sl && (slot_table[ss->slot].last_active+opt.card_timeout<time(NULL)))
+          if (session_list && !sl && (ss->last_active != 0) && (ss->last_active+opt.card_timeout<time(NULL)))
             {
               /* FIXME: Use a real timeout.  */
               /* At least one connection and all allow a disconnect.  */
               log_info ("disconnecting card in slot %d\n", ss->slot);
               apdu_disconnect (ss->slot);
-              sl->disconnect_allowed = 0;
+			  ss->last_active = 0;
+              for (sl=session_list; sl; sl = sl->next_session)
+                sl->disconnect_allowed = 0;
+			  exit(EXIT_SUCCESS);
             }
         }
 
